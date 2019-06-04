@@ -2,8 +2,12 @@
 
 $ScanComputer = {
     param (
-        $RemoteComputerName
+        $RemoteComputerName,
+        $credentials,
+        $UseCurrentCredentials
     )
+
+    $localComputerName = (Get-WmiObject Win32_ComputerSystem).Name
 
     $computer = New-Object -TypeName psobject
 
@@ -16,13 +20,6 @@ $ScanComputer = {
     $computer | Add-Member -MemberType NoteProperty -Name Age -Value $null
     $computer | Add-Member -MemberType NoteProperty -Name HardDriveSize -Value $null
     $computer | Add-Member -MemberType NoteProperty -Name HardDriveModel -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name OSCurrent -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name ArchitectureValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name ProcessorValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name RamValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name AgeValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name HardDriveValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name SSD -Value $false
     $computer | Add-Member -MemberType NoteProperty -Name Error -Value $null
     
     try {
@@ -31,17 +28,17 @@ $ScanComputer = {
             $ComputerSystem = Get-WmiObject Win32_ComputerSystem -ErrorAction Stop
             $OS = Get-WmiObject Win32_OperatingSystem -ErrorAction Stop
             $Processor = Get-WmiObject Win32_processor -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -ErrorAction Stop
-        } elseif ($UseCurrentCredentials) {
-            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-        } else {
+            $HardDrive = (Get-WmiObject Win32_DiskDrive -ErrorAction Stop) | Where-Object DeviceID -Like "*PhysicalDrive0*"
+        } elseif (!$UseCurrentCredentials) {
             $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
             $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
             $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+            $HardDrive = (Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop) | Where-Object DeviceID -Like "*PhysicalDrive0*"
+        } else {
+            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $HardDrive = (Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop) | Where-Object DeviceID -Like "*PhysicalDrive0*"
         }
 
         $computer.Name = $ComputerSystem.Name
@@ -53,18 +50,6 @@ $ScanComputer = {
         $computer.Age = ([Math]::Round(((New-TimeSpan -Start ($OS.ConvertToDateTime($OS.InstallDate).ToShortDateString()) -End $(Get-Date)).Days / 365), 2))
         $computer.HardDriveSize = [Math]::Round($HardDrive.Size / 1GB, 0)
         $computer.HardDriveModel = $HardDrive.Model
-
-        # Begin Evaluation
-        
-        $Processor_Gen = $computer.Processor.Substring(19,1)
-
-        $computer.OSCurrent = $OS.Version -like "10.*"
-        $computer.ArchitectureValid = $OS.OSArchitecture -like "64-bit"
-        $computer.ProcessorValid = $Processor_Gen -ge 5
-        $computer.RamValid = $computer.Ram -ge 8
-        $computer.AgeValid = $computer.Age -lt 5.0
-        $computer.HardDriveValid = $computer.HardDriveSize -ge 100
-        $computer.SSD = $computer.HardDriveModel -like "*SSD*"
 
         Write-Host "[Done]" -ForegroundColor Green
         
@@ -184,30 +169,33 @@ $networkComputers = (([adsi]"WinNT://$((Get-WMIObject Win32_ComputerSystem).Doma
 
 # Data Collection
 
-$localComputerName = (Get-WmiObject Win32_ComputerSystem).Name
-
 foreach ($RemoteComputer in $networkComputers) {
     $RemoteComputerName = $RemoteComputer.Path.Split("/")[3]
-    Start-Job -ScriptBlock $ScanComputer -Name $RemoteComputerName -ArgumentList $RemoteComputerName
+    Start-Job -ScriptBlock $ScanComputer -Name $RemoteComputerName -ArgumentList $RemoteComputerName, $credentials, $UseCurrentCredentials
 }
 
 $jobs = get-job
 do {
     Clear-Host
     $jobsRunning = 0
+    $jobsFailed = 0
     $jobsCompleted = 0
     foreach ($job in $jobs) {
         if ($job.state -like "*Running*") {
             $jobsRunning++
             Write-Host "$($job.state) scan on $($job.name)" -ForegroundColor Yellow
+        } elseif ($job.state -like "*Blocked*") {
+            $jobsFailed++
+            Write-Host "$($job.state) scan on $($job.name)" -ForegroundColor Red
         } else {
             $jobsCompleted++
             Write-Host "$($job.state) scan on $($job.name)" -ForegroundColor Green
         }
     }
 
-    Write-Host "`n`n$($jobsRunning) scans running"
-    Write-Host "$($jobsCompleted) scans completed"
+    Write-Host "`n`n$($jobsRunning) scans running" -ForegroundColor Yellow
+    Write-Host "$($jobsFailed) scans failed" -ForegroundColor Red
+    Write-Host "$($jobsCompleted) scans completed" -ForegroundColor Green
     Start-Sleep 1
 } while ($jobsRunning -gt 0)
 
