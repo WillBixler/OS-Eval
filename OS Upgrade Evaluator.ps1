@@ -1,3 +1,96 @@
+# Init Functions
+
+$ScanComputer = {
+    param (
+        $RemoteComputerName
+    )
+
+    $computer = New-Object -TypeName psobject
+
+    $computer | Add-Member -MemberType NoteProperty -Name Name -Value $RemoteComputerName
+    $computer | Add-Member -MemberType NoteProperty -Name OS -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name OSName -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name Architecture -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name Processor -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name Ram -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name Age -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name HardDriveSize -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name HardDriveModel -Value $null
+    $computer | Add-Member -MemberType NoteProperty -Name OSCurrent -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name ArchitectureValid -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name ProcessorValid -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name RamValid -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name AgeValid -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name HardDriveValid -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name SSD -Value $false
+    $computer | Add-Member -MemberType NoteProperty -Name Error -Value $null
+    
+    try {
+
+        if ($RemoteComputerName -eq $localComputerName) {
+            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -ErrorAction Stop
+            $OS = Get-WmiObject Win32_OperatingSystem -ErrorAction Stop
+            $Processor = Get-WmiObject Win32_processor -ErrorAction Stop
+            $HardDrive = Get-WmiObject Win32_DiskDrive -ErrorAction Stop
+        } elseif ($UseCurrentCredentials) {
+            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+        } else {
+            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+        }
+
+        $computer.Name = $ComputerSystem.Name
+        $computer.OS = $OS.Version
+        $computer.OSName = $OS.Name.Split("|")[0]
+        $computer.Architecture = $OS.OSArchitecture
+        $computer.Processor = $Processor.Name
+        $computer.Ram = ([Math]::Round($ComputerSystem.TotalPhysicalMemory/1GB,0))
+        $computer.Age = ([Math]::Round(((New-TimeSpan -Start ($OS.ConvertToDateTime($OS.InstallDate).ToShortDateString()) -End $(Get-Date)).Days / 365), 2))
+        $computer.HardDriveSize = [Math]::Round($HardDrive.Size / 1GB, 0)
+        $computer.HardDriveModel = $HardDrive.Model
+
+        # Begin Evaluation
+        
+        $Processor_Gen = $computer.Processor.Substring(19,1)
+
+        $computer.OSCurrent = $OS.Version -like "10.*"
+        $computer.ArchitectureValid = $OS.OSArchitecture -like "64-bit"
+        $computer.ProcessorValid = $Processor_Gen -ge 5
+        $computer.RamValid = $computer.Ram -ge 8
+        $computer.AgeValid = $computer.Age -lt 5.0
+        $computer.HardDriveValid = $computer.HardDriveSize -ge 100
+        $computer.SSD = $computer.HardDriveModel -like "*SSD*"
+
+        Write-Host "[Done]" -ForegroundColor Green
+        
+    } catch [System.UnauthorizedAccessException] {
+        Write-Host "Access Denied" -ForegroundColor Red
+        $computer.Error = "Access Denied"
+    } catch [System.Runtime.InteropServices.COMException] {
+        if (Test-Connection $RemoteComputerName -Count 1 -Quiet) {
+            Write-Host "RPC server unavailable" -ForegroundColor Red
+            $computer.Error = "RPC server unavailable"
+        } else {
+            Write-Host "Offline" -ForegroundColor Red
+            $computer.Error = "Offline"
+        }
+    } catch [System.Management.ManagementException] {
+        Write-Host "User credentials cannot be used for local connections" -ForegroundColor Red
+        $computer.Error = "User credentials cannot be used for local connections"
+    } catch {
+        Write-Host "Unknown Error - $($_.Exception.Message) | $($_.Exception.GetType())" -ForegroundColor Red
+        $computer.Error = "Unknown Error - $($_.Exception.Message) | $($_.Exception.GetType())"
+    }
+
+    return $computer
+    
+}
+
 # Init Variables
 
 $computers = @()
@@ -94,154 +187,32 @@ $networkComputers = (([adsi]"WinNT://$((Get-WMIObject Win32_ComputerSystem).Doma
 $localComputerName = (Get-WmiObject Win32_ComputerSystem).Name
 
 foreach ($RemoteComputer in $networkComputers) {
-
     $RemoteComputerName = $RemoteComputer.Path.Split("/")[3]
-    Write-Host "`nScanning $($RemoteComputerName)..." -ForegroundColor Green
+    Start-Job -ScriptBlock $ScanComputer -Name $RemoteComputerName -ArgumentList $RemoteComputerName
+}
 
-    $computer = New-Object -TypeName psobject
-
-    $computer | Add-Member -MemberType NoteProperty -Name Name -Value $RemoteComputerName
-    $computer | Add-Member -MemberType NoteProperty -Name OS -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name OSName -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name Architecture -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name Processor -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name Ram -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name Age -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name HardDriveSize -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name HardDriveModel -Value $null
-    $computer | Add-Member -MemberType NoteProperty -Name OSCurrent -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name ArchitectureValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name ProcessorValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name RamValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name AgeValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name HardDriveValid -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name SSD -Value $false
-    $computer | Add-Member -MemberType NoteProperty -Name Error -Value $null
-    
-    try {
-
-        if ($RemoteComputerName -eq $localComputerName) {
-            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -ErrorAction Stop
-            $OS = Get-WmiObject Win32_OperatingSystem -ErrorAction Stop
-            $Processor = Get-WmiObject Win32_processor -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -ErrorAction Stop
-        } elseif ($UseCurrentCredentials) {
-            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -ErrorAction Stop
+$jobs = get-job
+do {
+    Clear-Host
+    $jobsRunning = 0
+    $jobsCompleted = 0
+    foreach ($job in $jobs) {
+        if ($job.state -like "*Running*") {
+            $jobsRunning++
+            Write-Host "$($job.state) scan on $($job.name)" -ForegroundColor Yellow
         } else {
-            $ComputerSystem = Get-WmiObject Win32_ComputerSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
-            $OS = Get-WmiObject Win32_OperatingSystem -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
-            $Processor = Get-WmiObject Win32_processor -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
-            $HardDrive = Get-WmiObject Win32_DiskDrive -Impersonation 3 -ComputerName $RemoteComputerName -Credential $credentials -ErrorAction Stop
+            $jobsCompleted++
+            Write-Host "$($job.state) scan on $($job.name)" -ForegroundColor Green
         }
-
-        $computer.Name = $ComputerSystem.Name
-        $computer.OS = $OS.Version
-        $computer.OSName = $OS.Name.Split("|")[0]
-        $computer.Architecture = $OS.OSArchitecture
-        $computer.Processor = $Processor.Name
-        $computer.Ram = ([Math]::Round($ComputerSystem.TotalPhysicalMemory/1GB,0))
-        $computer.Age = ([Math]::Round(((New-TimeSpan -Start ($OS.ConvertToDateTime($OS.InstallDate).ToShortDateString()) -End $(Get-Date)).Days / 365), 2))
-        $computer.HardDriveSize = [Math]::Round($HardDrive.Size / 1GB, 0)
-        $computer.HardDriveModel = $HardDrive.Model
-
-        # Begin Evaluation
-
-        if ($OS.Version -like "10.*") {
-            $computer.OSCurrent = $true
-        }
-
-        if ($OS.OSArchitecture -like "64-bit") {
-            $computer.ArchitectureValid = $true
-        }
-
-        $Processor_Gen = $computer.Processor.Substring(19,1)
-        if ($Processor_Gen -ge 5) {
-            $computer.ProcessorValid = $true
-        }
-
-        if ($computer.Ram -ge 8) {
-            $computer.RamValid = $true
-        }
-
-        if ($computer.Age -lt 5.0) {
-            $computer.AgeValid = $true
-        }
-
-        if ($computer.HardDriveSize -ge 100) {
-            $computer.HardDriveValid = $true
-        }
-
-        if ($computer.HardDriveModel -like "*SSD*") {
-            $computer.SSD = $true
-        }
-
-        # Begin Output
-
-        if ($computer.ArchitectureValid -and $computer.ProcessorValid -and $computer.RamValid -and $computer.AgeValid) {
-            if ($computer.OSCurrent) {
-                Write-Host $computer.Name -ForegroundColor Green
-            } else {
-                Write-Host $computer.Name -ForegroundColor Yellow
-            }
-        } else {
-            Write-Host $computer.Name -ForegroundColor Red
-        }
-
-        if ($computer.OSCurrent) {
-            Write-Host $computer.OSName -ForegroundColor Green
-        } else {
-            Write-Host $computer.OSName -ForegroundColor Yellow
-        }
-
-        if ($computer.ArchitectureValid) {
-            Write-Host $computer.Architecture -ForegroundColor Green
-        } else {
-            Write-Host $computer.Architecture -ForegroundColor Red
-        }
-
-        if ($computer.ProcessorValid) {
-            Write-Host $computer.Processor -ForegroundColor Green
-        } else {
-            Write-Host $computer.Processor -ForegroundColor Red
-        }
-
-        if ($computer.RamValid) {
-            Write-Host "$($computer.Ram)GB" -ForegroundColor Green
-        } else {
-            Write-Host "$($computer.Ram)GB" -ForegroundColor Red
-        }
-
-        if ($computer.AgeValid) {
-            Write-Host "$($computer.Age) years old" -ForegroundColor Green
-        } else {
-            Write-Host "$($computer.Age) years old" -ForegroundColor Red
-        }
-
-        
-    } catch [System.UnauthorizedAccessException] {
-        Write-Host "Access Denied" -ForegroundColor Red
-        $computer.Error = "Access Denied"
-    } catch [System.Runtime.InteropServices.COMException] {
-        if (Test-Connection $RemoteComputerName -Count 1 -Quiet) {
-            Write-Host "RPC server unavailable" -ForegroundColor Red
-            $computer.Error = "RPC server unavailable"
-        } else {
-            Write-Host "Offline" -ForegroundColor Red
-            $computer.Error = "Offline"
-        }
-    } catch [System.Management.ManagementException] {
-        Write-Host "User credentials cannot be used for local connections" -ForegroundColor Red
-        $computer.Error = "User credentials cannot be used for local connections"
-    } catch {
-        Write-Host "Unknown Error - $($_.Exception.Message) | $($_.Exception.GetType())" -ForegroundColor Red
-        $computer.Error = "Unknown Error - $($_.Exception.Message) | $($_.Exception.GetType())"
     }
 
-    $computers += $computer
+    Write-Host "`n`n$($jobsRunning) scans running"
+    Write-Host "$($jobsCompleted) scans completed"
+    Start-Sleep 1
+} while ($jobsRunning -gt 0)
 
+foreach ($job in $jobs) {
+    $computers += $job | Receive-Job
 }
 
 Write-Host "Scan complete... Please select where to save the file..."
@@ -259,3 +230,4 @@ $computers | Export-Csv -Path $Path
 
 Write-Host "`n`nFile Saved... $($Path)" -ForegroundColor Green
 Write-Host "Done!" -ForegroundColor Green
+
